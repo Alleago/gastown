@@ -166,6 +166,19 @@ func runPrime(cmd *cobra.Command, args []string) (retErr error) {
 	telemetry.RecordPrimeContext(context.Background(), formula, os.Getenv("GT_ROLE"), primeHookMode)
 
 	hasSlungWork := checkSlungWork(ctx)
+	// Retry for polecats: hook state may not be visible yet due to Dolt branch timing.
+	// The sling command sets the hook before creating the polecat's Dolt branch,
+	// but there can be a race where the polecat's beads query doesn't see it yet.
+	// Retry up to 3 times with 2-second delays before concluding there's no work.
+	if !hasSlungWork && ctx.Role == RolePolecat {
+		for retry := 0; retry < 3; retry++ {
+			time.Sleep(2 * time.Second)
+			hasSlungWork = checkSlungWork(ctx)
+			if hasSlungWork {
+				break
+			}
+		}
+	}
 	explain(hasSlungWork, "Autonomous mode: hooked/in-progress work detected")
 
 	outputMoleculeContext(ctx)
