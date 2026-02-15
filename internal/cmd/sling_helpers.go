@@ -28,11 +28,11 @@ func resolveBeadDir(beadID string) string {
 	if err != nil {
 		return "."
 	}
-	prefix := beads.ExtractPrefix(beadID)
-	if rigPath := beads.GetRigPathForPrefix(townRoot, prefix); rigPath != "" {
+	if rigPath := beads.GetRigPathForBeadID(townRoot, beadID); rigPath != "" {
 		return rigPath
 	}
 	// Fallback: consult rigs.json for prefix-to-rig mapping
+	prefix := beads.ExtractPrefix(beadID)
 	if rigDir := resolveBeadDirFromRigsJSON(townRoot, prefix); rigDir != "" {
 		return rigDir
 	}

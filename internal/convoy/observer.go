@@ -287,11 +287,7 @@ func extractIssueID(id string) string {
 // rigForIssue determines the rig name for an issue based on its ID prefix.
 // Uses the beads routes to map prefixes to rigs.
 func rigForIssue(townRoot, issueID string) string {
-	prefix := beads.ExtractPrefix(issueID)
-	if prefix == "" {
-		return ""
-	}
-	return beads.GetRigNameForPrefix(townRoot, prefix)
+	return beads.GetRigNameForBeadID(townRoot, issueID)
 }
 
 // dispatchIssue dispatches an issue to a rig via gt sling.
