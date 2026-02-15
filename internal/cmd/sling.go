@@ -588,12 +588,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 // Returns an error if the bead belongs to a different rig than the target polecat.
 // Skips the check for town-level beads (hq-*) or beads with unknown prefixes.
 func checkCrossRigGuard(beadID, targetAgent, townRoot string) error {
-	beadPrefix := beads.ExtractPrefix(beadID)
-	if beadPrefix == "" {
-		return nil // Can't determine prefix, skip check
-	}
-
-	beadRig := beads.GetRigNameForPrefix(townRoot, beadPrefix)
+	beadRig := beads.GetRigNameForBeadID(townRoot, beadID)
 	if beadRig == "" {
 		return nil // Town-level or unknown prefix, skip check
 	}
@@ -605,9 +600,9 @@ func checkCrossRigGuard(beadID, targetAgent, townRoot string) error {
 	}
 
 	if targetRig != beadRig {
-		return fmt.Errorf("cross-rig mismatch: bead %s (prefix %q) belongs to rig %q, but target is rig %q\n"+
+		return fmt.Errorf("cross-rig mismatch: bead %s belongs to rig %q, but target is rig %q\n"+
 			"Polecats work in their rig's worktree and cannot fix code from another rig.\n"+
-			"Use --force to override this check", beadID, strings.TrimSuffix(beadPrefix, "-"), beadRig, targetRig)
+			"Use --force to override this check", beadID, beadRig, targetRig)
 	}
 
 	return nil

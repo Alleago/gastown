@@ -51,15 +51,10 @@ func ResolveRoutingTarget(townRoot, beadID, fallbackDir string) string {
 		return fallbackDir
 	}
 
-	// Extract prefix from bead ID (e.g., "gt-gastown-polecat-Toast" -> "gt-")
-	prefix := ExtractPrefix(beadID)
-	if prefix == "" {
-		return fallbackDir
-	}
-
-	// Look up rig path for this prefix
-	rigPath := GetRigPathForPrefix(townRoot, prefix)
+	// Look up rig path using longest-prefix matching
+	rigPath := GetRigPathForBeadID(townRoot, beadID)
 	if rigPath == "" {
+		prefix := ExtractPrefix(beadID)
 		fmt.Fprintf(os.Stderr, "Warning: no route found for prefix %q (bead %s), falling back to %s\n", prefix, beadID, fallbackDir)
 		return fallbackDir
 	}
