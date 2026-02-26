@@ -222,6 +222,11 @@ func FindConflictingPrefixes(beadsDir string) (map[string][]string, error) {
 // For example, "ap-qtsup.16" returns "ap-", "hq-cv-abc" returns "hq-".
 // Returns empty string if no valid prefix found (empty input, no hyphen,
 // or hyphen at position 0 which would indicate an invalid prefix).
+//
+// Note: This extracts only the first hyphen-delimited segment. For routing
+// with overlapping prefixes (e.g., "hq-" and "hq-wisp-"), use
+// GetRigPathForBeadID or GetRigNameForBeadID instead, which perform
+// longest-prefix matching.
 func ExtractPrefix(beadID string) string {
 	if beadID == "" {
 		return ""
@@ -233,6 +238,66 @@ func ExtractPrefix(beadID string) string {
 	}
 
 	return beadID[:idx+1]
+}
+
+// matchLongestPrefix finds the route with the longest prefix that matches
+// the given bead ID. This handles overlapping prefixes correctly: for a bead
+// ID like "hq-wisp-xxx" with routes for both "hq-" and "hq-wisp-", it
+// returns the "hq-wisp-" route (longest match).
+func matchLongestPrefix(routes []Route, beadID string) *Route {
+	var best *Route
+	bestLen := 0
+	for i := range routes {
+		if strings.HasPrefix(beadID, routes[i].Prefix) && len(routes[i].Prefix) > bestLen {
+			best = &routes[i]
+			bestLen = len(routes[i].Prefix)
+		}
+	}
+	return best
+}
+
+// GetRigPathForBeadID returns the rig path for a bead ID using longest-prefix
+// matching against routes.jsonl. This correctly handles overlapping prefixes
+// (e.g., "hq-" vs "hq-wisp-") by selecting the longest matching prefix.
+// Returns the full absolute path to the rig directory, or empty string if not found.
+func GetRigPathForBeadID(townRoot, beadID string) string {
+	beadsDir := filepath.Join(townRoot, ".beads")
+	routes, err := LoadRoutes(beadsDir)
+	if err != nil || routes == nil {
+		return ""
+	}
+
+	route := matchLongestPrefix(routes, beadID)
+	if route == nil {
+		return ""
+	}
+	if route.Path == "." {
+		return townRoot
+	}
+	return filepath.Join(townRoot, route.Path)
+}
+
+// GetRigNameForBeadID returns the rig name for a bead ID using longest-prefix
+// matching. Returns empty string if the bead is town-level (path=".") or not found.
+func GetRigNameForBeadID(townRoot, beadID string) string {
+	beadsDir := filepath.Join(townRoot, ".beads")
+	routes, err := LoadRoutes(beadsDir)
+	if err != nil || routes == nil {
+		return ""
+	}
+
+	route := matchLongestPrefix(routes, beadID)
+	if route == nil {
+		return ""
+	}
+	if route.Path == "." {
+		return ""
+	}
+	parts := strings.SplitN(route.Path, "/", 2)
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return ""
 }
 
 // GetRigPathForPrefix returns the rig path for a given bead ID prefix.
@@ -288,9 +353,8 @@ func GetRigNameForPrefix(townRoot, prefix string) string {
 // actual rig directory from the bead's prefix. hookWorkDir is only used as
 // a fallback if prefix resolution fails.
 func ResolveHookDir(townRoot, beadID, hookWorkDir string) string {
-	// Always try prefix resolution first - bd update needs the actual rig dir
-	prefix := ExtractPrefix(beadID)
-	if rigPath := GetRigPathForPrefix(townRoot, prefix); rigPath != "" {
+	// Always try longest-prefix resolution first - bd update needs the actual rig dir
+	if rigPath := GetRigPathForBeadID(townRoot, beadID); rigPath != "" {
 		return rigPath
 	}
 	// Fallback to hookWorkDir if provided

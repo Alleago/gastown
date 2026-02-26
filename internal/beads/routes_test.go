@@ -254,6 +254,120 @@ func TestGetRigNameForPrefix(t *testing.T) {
 	}
 }
 
+func TestMatchLongestPrefix(t *testing.T) {
+	routes := []Route{
+		{Prefix: "hq-", Path: "."},
+		{Prefix: "hq-wisp-", Path: "wisp-storage"},
+		{Prefix: "gt-", Path: "gastown/mayor/rig"},
+		{Prefix: "ap-", Path: "ai_platform/mayor/rig"},
+	}
+
+	tests := []struct {
+		name     string
+		beadID   string
+		expected string // expected prefix, or "" for nil
+	}{
+		{"simple prefix", "gt-abc123", "gt-"},
+		{"simple prefix 2", "ap-xyz", "ap-"},
+		{"short prefix wins for simple ID", "hq-abc", "hq-"},
+		{"longest prefix wins for wisp ID", "hq-wisp-u896p", "hq-wisp-"},
+		{"longest prefix wins with more segments", "hq-wisp-something-deep", "hq-wisp-"},
+		{"no match", "xx-unknown", ""},
+		{"empty bead ID", "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := matchLongestPrefix(routes, tc.beadID)
+			if tc.expected == "" {
+				if result != nil {
+					t.Errorf("matchLongestPrefix(%q) = %q, want nil", tc.beadID, result.Prefix)
+				}
+			} else {
+				if result == nil {
+					t.Errorf("matchLongestPrefix(%q) = nil, want %q", tc.beadID, tc.expected)
+				} else if result.Prefix != tc.expected {
+					t.Errorf("matchLongestPrefix(%q) = %q, want %q", tc.beadID, result.Prefix, tc.expected)
+				}
+			}
+		})
+	}
+}
+
+func TestGetRigPathForBeadID(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	routesContent := `{"prefix": "hq-", "path": "."}
+{"prefix": "hq-wisp-", "path": "wisp-storage"}
+{"prefix": "gt-", "path": "gastown/mayor/rig"}
+`
+	if err := os.WriteFile(filepath.Join(beadsDir, "routes.jsonl"), []byte(routesContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		beadID   string
+		expected string
+	}{
+		{"simple hq bead routes to town", "hq-abc123", tmpDir},
+		{"wisp bead routes to wisp-storage", "hq-wisp-u896p", filepath.Join(tmpDir, "wisp-storage")},
+		{"gt bead routes to gastown", "gt-mol-xyz", filepath.Join(tmpDir, "gastown/mayor/rig")},
+		{"unknown prefix returns empty", "xx-unknown", ""},
+		{"empty bead ID returns empty", "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := GetRigPathForBeadID(tmpDir, tc.beadID)
+			if result != tc.expected {
+				t.Errorf("GetRigPathForBeadID(%q, %q) = %q, want %q", tmpDir, tc.beadID, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestGetRigNameForBeadID(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	routesContent := `{"prefix": "hq-", "path": "."}
+{"prefix": "hq-wisp-", "path": "wisp-storage/mayor/rig"}
+{"prefix": "gt-", "path": "gastown/mayor/rig"}
+`
+	if err := os.WriteFile(filepath.Join(beadsDir, "routes.jsonl"), []byte(routesContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		beadID   string
+		expected string
+	}{
+		{"hq bead is town-level", "hq-abc", ""},
+		{"wisp bead routes to wisp-storage rig", "hq-wisp-xyz", "wisp-storage"},
+		{"gt bead routes to gastown", "gt-mol-abc", "gastown"},
+		{"unknown prefix returns empty", "xx-abc", ""},
+		{"empty bead ID returns empty", "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := GetRigNameForBeadID(tmpDir, tc.beadID)
+			if result != tc.expected {
+				t.Errorf("GetRigNameForBeadID(%q, %q) = %q, want %q", tmpDir, tc.beadID, result, tc.expected)
+			}
+		})
+	}
+}
+
 func TestAgentBeadIDsWithPrefix(t *testing.T) {
 	tests := []struct {
 		name     string
