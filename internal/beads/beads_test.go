@@ -3191,3 +3191,53 @@ func TestIsSubprocessCrash(t *testing.T) {
 		})
 	}
 }
+
+func TestDelegateForRig(t *testing.T) {
+	tmpDir := t.TempDir()
+	mayorDir := filepath.Join(tmpDir, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mayorDir, "town.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rigDir := filepath.Join(tmpDir, "myrig")
+	if err := os.MkdirAll(filepath.Join(rigDir, ".beads"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("empty rig returns nil", func(t *testing.T) {
+		b := New(tmpDir)
+		if got := b.delegateForRig(""); got != nil {
+			t.Errorf("delegateForRig(\"\") = %v, want nil", got)
+		}
+	})
+
+	t.Run("rig outside town returns nil", func(t *testing.T) {
+		b := New(t.TempDir()) // not a town
+		if got := b.delegateForRig("myrig"); got != nil {
+			t.Errorf("delegateForRig outside town = %v, want nil", got)
+		}
+	})
+
+	t.Run("delegate routes to rig beads dir", func(t *testing.T) {
+		b := New(tmpDir)
+		got := b.delegateForRig("myrig")
+		if got == nil {
+			t.Fatal("delegateForRig returned nil for valid rig")
+		}
+		want := filepath.Join(rigDir, ".beads")
+		if got.getResolvedBeadsDir() != want {
+			t.Errorf("delegate beads dir = %q, want %q", got.getResolvedBeadsDir(), want)
+		}
+	})
+
+	t.Run("delegate skipped when already on rig", func(t *testing.T) {
+		// Beads already pointing at the rig dir — no delegation needed.
+		b := NewWithBeadsDir(rigDir, filepath.Join(rigDir, ".beads"))
+		// Force townRoot resolution from the rig dir (still inside the town).
+		if got := b.delegateForRig("myrig"); got != nil {
+			t.Errorf("delegateForRig when already on rig = %v, want nil", got)
+		}
+	})
+}

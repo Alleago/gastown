@@ -2628,10 +2628,11 @@ func (d *Daemon) isBeadClosed(beadID string) bool {
 // field (updateAgentHookBead is a no-op). Without this fallback, the idle reaper
 // kills working polecats whose agent bead hook_bead is stale.
 func (d *Daemon) hasAssignedOpenWork(rigName, assignee string) bool {
+	rigBeadsDir := filepath.Join(d.config.TownRoot, rigName, ".beads")
 	for _, status := range []string{"hooked", "in_progress", "open"} {
-		cmd := exec.Command(d.bdPath, "list", "--rig="+rigName, "--assignee="+assignee, "--status="+status, "--json") //nolint:gosec // G204: args are constructed internally
+		cmd := exec.Command(d.bdPath, "list", "--assignee="+assignee, "--status="+status, "--json") //nolint:gosec // G204: args are constructed internally
 		cmd.Dir = d.config.TownRoot
-		cmd.Env = os.Environ()
+		cmd.Env = append(os.Environ(), "BEADS_DIR="+rigBeadsDir)
 		output, err := cmd.Output()
 		if err != nil {
 			continue

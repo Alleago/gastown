@@ -1197,6 +1197,15 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 		return nil, fmt.Errorf("refusing to create bead: %w (got %q)", ErrFlagTitle, opts.Title)
 	}
 
+	// Cross-rig routing: bd has no --rig flag in any released version. Route to
+	// the rig's database via BEADS_DIR by delegating through a per-rig Beads
+	// instance. Recursion is bounded by clearing opts.Rig in the delegated call.
+	if rigDelegate := b.delegateForRig(opts.Rig); rigDelegate != nil {
+		optsCopy := opts
+		optsCopy.Rig = ""
+		return rigDelegate.Create(optsCopy)
+	}
+
 	if b.store != nil && !opts.Ephemeral {
 		return b.storeCreate(opts)
 	}
@@ -1226,9 +1235,6 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 	if opts.Ephemeral {
 		args = append(args, "--ephemeral")
 	}
-	if opts.Rig != "" {
-		args = append(args, "--rig="+opts.Rig)
-	}
 	// Default Actor from BD_ACTOR env var if not specified
 	// Uses getActor() to respect isolated mode (tests)
 	actor := opts.Actor
@@ -1250,6 +1256,27 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 	}
 
 	return &issue, nil
+}
+
+// delegateForRig returns a per-rig Beads instance routed at the rig's beads
+// directory when cross-rig routing is required. Returns nil when no routing is
+// needed (rig empty or already targeting the rig). Falls back to nil when the
+// town root cannot be resolved so callers continue to operate on the current
+// directory rather than failing.
+func (b *Beads) delegateForRig(rig string) *Beads {
+	if rig == "" {
+		return nil
+	}
+	townRoot := b.getTownRoot()
+	if townRoot == "" {
+		return nil
+	}
+	rigDir := filepath.Join(townRoot, rig)
+	rigBeadsDir := filepath.Join(rigDir, ".beads")
+	if rigBeadsDir == b.getResolvedBeadsDir() {
+		return nil
+	}
+	return NewWithBeadsDir(rigDir, rigBeadsDir)
 }
 
 // CreateWithID creates an issue with a specific ID.
