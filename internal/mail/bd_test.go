@@ -280,6 +280,74 @@ func TestBdSubprocessEnv_AllowsRoutingWhenBeadsDirEmpty(t *testing.T) {
 	}
 }
 
+// parseBeadsListOutput must tolerate bd v0.58+ empty-result plain-text
+// output ("No issues found.") and treat it as an empty result with no
+// error. A regression here would surface as "gt mail inbox" errors when
+// any one of the four parallel queries returns no rows — which happens
+// often for the CC and wisp queries (aa-sct).
+func TestParseBeadsListOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantLen int
+		wantErr bool
+	}{
+		{
+			name:    "empty",
+			input:   "",
+			wantLen: 0,
+			wantErr: false,
+		},
+		{
+			name:    "plain text from bd v0.58+",
+			input:   "No issues found.\n",
+			wantLen: 0,
+			wantErr: false,
+		},
+		{
+			name:    "literal null",
+			input:   "null",
+			wantLen: 0,
+			wantErr: false,
+		},
+		{
+			name:    "empty array",
+			input:   "[]",
+			wantLen: 0,
+			wantErr: false,
+		},
+		{
+			name:    "valid messages",
+			input:   `[{"id":"msg-1","title":"hi","status":"open"}]`,
+			wantLen: 1,
+			wantErr: false,
+		},
+		{
+			name:    "malformed json",
+			input:   `[{"id":`,
+			wantLen: 0,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseBeadsListOutput([]byte(tt.input))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseBeadsListOutput(%q) = nil error, want error", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseBeadsListOutput(%q) returned error: %v", tt.input, err)
+			}
+			if len(got) != tt.wantLen {
+				t.Fatalf("parseBeadsListOutput(%q) len = %d, want %d", tt.input, len(got), tt.wantLen)
+			}
+		})
+	}
+}
+
 func envContains(env []string, kv string) bool {
 	for _, entry := range env {
 		if entry == kv {
