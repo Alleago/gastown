@@ -424,6 +424,39 @@ func (d *testDAG) Setup(t *testing.T) (townRoot, logPath string) {
 	// Inject bin/ into PATH.
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 
+	// Prevent the embedded beads SDK from auto-spawning a real `dolt
+	// sql-server` if any test code path slips past our stubs and hits
+	// b.OpenStore / mutateTrackingRelationViaStore. Without this, a
+	// previously-passing test like TestLaunchAsAlias_EpicInput could
+	// silently fork a dolt process whose cwd is inside this test's
+	// t.TempDir(); when the temp dir was removed at test exit the dolt
+	// kept running (cwd "(deleted)"), reparented to systemd. That was
+	// the bug behind aa-7f9r — 77+ orphaned dolt sql-servers piled up
+	// on a developer host over ~11 days.
+	t.Setenv("BEADS_DOLT_AUTO_START", "0")
+
+	// Stub the tracking-relation helpers so calls from runConvoyStage /
+	// createStagedConvoy don't reach mutateTrackingRelationViaStore (which
+	// would open a beads-SDK store and, if no server were running, fork a
+	// fresh dolt sql-server in the test temp dir). The stub records each
+	// call into bd.log using the same "CMD:dep add ..." line shape that
+	// the bd shell stub uses, so existing assertions that grep bd.log for
+	// `dep add <convoy> <bead>` continue to pass.
+	oldAddTracking := addTrackingRelationFn
+	oldRemoveTracking := removeTrackingRelationFn
+	addTrackingRelationFn = func(townRoot, trackerID, issueID string) error {
+		appendBdLog(logPath, fmt.Sprintf("dep add %s %s --type=tracks", trackerID, issueID))
+		return nil
+	}
+	removeTrackingRelationFn = func(townRoot, trackerID, issueID string) error {
+		appendBdLog(logPath, fmt.Sprintf("dep remove %s %s --type=tracks", trackerID, issueID))
+		return nil
+	}
+	t.Cleanup(func() {
+		addTrackingRelationFn = oldAddTracking
+		removeTrackingRelationFn = oldRemoveTracking
+	})
+
 	// Change cwd to town root with cleanup.
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -440,6 +473,20 @@ func (d *testDAG) Setup(t *testing.T) (townRoot, logPath string) {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+// appendBdLog mimics the bd shell stub's `echo "CMD:$*" >> "$LOGPATH"` line
+// for in-process stubs that bypass the shell stub (e.g. the tracking-
+// relation stubs in Setup). Keeping the line shape consistent means tests
+// can assert on the same bd.log regardless of whether a particular bd
+// invocation went through the shell stub or an in-process Go stub.
+func appendBdLog(logPath, cmd string) {
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "CMD:%s\n", cmd)
+}
 
 // prefixOf extracts the prefix from a bead ID (e.g. "gt-abc" → "gt-").
 func prefixOf(id string) string {
