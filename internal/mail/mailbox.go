@@ -143,6 +143,16 @@ func (m *Mailbox) listBeads() ([]*Message, error) {
 // Uses per-identity --assignee queries to push filtering to Dolt, reducing
 // memory footprint under concurrent agent load. A separate CC query fetches
 // messages where this identity is CC'd.
+//
+// The four query types (assignee+CC × issues+wisps) are dispatched
+// concurrently. Each individual bd subprocess is cheap when Dolt is healthy,
+// but spawning them serially adds up: `gt mail inbox` would block on the
+// sum of all four bd subprocess startups before rendering anything. Under
+// agent load — when unread mail is present and hooks are firing inbox reads
+// repeatedly — this serial accumulation produced multi-minute hangs even
+// while Dolt itself reported low latency (aa-sct). Running the queries
+// concurrently caps wall-clock at max(query), not sum(query), and matches
+// the existing concurrency pattern used by AcknowledgeDeliveries.
 func (m *Mailbox) listFromDir(beadsDir string) ([]*Message, error) {
 	// Use in-process store when available
 	if m.store != nil {
@@ -155,141 +165,168 @@ func (m *Mailbox) listFromDir(beadsDir string) ([]*Message, error) {
 		return nil, fmt.Errorf("ensuring custom types: %w", err)
 	}
 
-	// Deduplicate messages across queries (assignee + CC may overlap)
+	// listFetch describes one bd-subprocess query.
+	type listFetch struct {
+		kind         string // "assignee" | "cc" | "wisp-assignee" | "wisp-cc"
+		messages     []BeadsMessage
+		err          error
+		fatalOnError bool // true → propagate error to caller
+	}
+
+	tasks := make([]*listFetch, 0, len(identities)*4)
+	for _, id := range identities {
+		tasks = append(tasks,
+			&listFetch{kind: "assignee:" + id, fatalOnError: true},
+			&listFetch{kind: "cc:" + id, fatalOnError: false},
+			&listFetch{kind: "wisp-assignee:" + id, fatalOnError: false},
+			&listFetch{kind: "wisp-cc:" + id, fatalOnError: false},
+		)
+	}
+
+	// Dispatch all queries concurrently with bounded parallelism. The cap
+	// matches the typical task count for a single identity and avoids
+	// hammering Dolt under concurrent agent load.
+	const maxConcurrentListOps = 8
+	sem := make(chan struct{}, maxConcurrentListOps)
+	var wg sync.WaitGroup
+	for i, identity := range identities {
+		base := i * 4
+		assignee := tasks[base]
+		cc := tasks[base+1]
+		wispAssignee := tasks[base+2]
+		wispCC := tasks[base+3]
+
+		wg.Add(4)
+		// Issue: assignee query
+		sem <- struct{}{}
+		go func(identity string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			assignee.messages, assignee.err = m.fetchAssigneeMessages(beadsDir, identity)
+		}(identity)
+		// Issue: CC query
+		sem <- struct{}{}
+		go func(identity string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			cc.messages, cc.err = m.fetchCCMessages(beadsDir, identity)
+		}(identity)
+		// Wisp: assignee query
+		sem <- struct{}{}
+		go func(identity string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			wispAssignee.messages = m.queryWispMessagesByAssignee(beadsDir, identity)
+		}(identity)
+		// Wisp: CC query
+		sem <- struct{}{}
+		go func(identity string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			wispCC.messages = m.queryWispMessagesByCC(beadsDir, identity)
+		}(identity)
+	}
+	wg.Wait()
+
+	// Stitch results back in deterministic order: for each identity, in
+	// (assignee, cc, wisp-assignee, wisp-cc) order. Sorting at the end is
+	// authoritative for display order, but deterministic dedup ordering
+	// keeps tests stable across runs.
 	seen := make(map[string]bool)
 	messages := make([]*Message, 0)
-
-	// Query 1: assignee match (per identity variant)
-	for _, id := range identities {
-		args := []string{"list",
-			"--label", "gt:message",
-			"--assignee", id,
-			"--json",
-			"--limit", "0",
-		}
-
-		ctx, cancel := bdReadCtx()
-		stdout, err := runBdCommand(ctx, args, m.workDir, beadsDir)
-		cancel()
-		if err != nil {
-			return nil, err
-		}
-
-		// bd v0.58.0 returns plain text (e.g. "No issues found.") for
-		// empty result sets instead of JSON. Skip non-JSON output.
-		if !isJSON(stdout) {
+	for _, task := range tasks {
+		if task.err != nil {
+			if task.fatalOnError {
+				return nil, task.err
+			}
+			// Non-fatal — log to stderr so the next repro reveals which
+			// query failed without making the inbox unreadable.
+			fmt.Fprintf(os.Stderr, "gt mail list: %s query failed: %v\n", task.kind, task.err)
 			continue
 		}
-		var msgs []BeadsMessage
-		trimmed := bytes.TrimSpace(stdout)
-		if len(trimmed) == 0 || string(trimmed) == "null" || (trimmed[0] != '[' && trimmed[0] != '{') {
-			// bd v0.58.0 returns plain text (e.g. "No issues found.") for
-			// empty result sets instead of JSON. Skip non-JSON output.
-			continue
-		}
-		if err := json.Unmarshal(stdout, &msgs); err != nil {
-			return nil, err
-		}
-
-		for i := range msgs {
-			bm := &msgs[i]
+		isAssigneeQuery := strings.HasPrefix(task.kind, "assignee:") ||
+			strings.HasPrefix(task.kind, "wisp-assignee:")
+		for i := range task.messages {
+			bm := &task.messages[i]
 			if seen[bm.ID] {
 				continue
 			}
-			// Assignee match: open or hooked status
-			if bm.Status == "open" || bm.Status == "hooked" {
+			// Assignee match: open or hooked. CC match: open only
+			// (hooked indicates the message has already been auto-assigned
+			// to the primary recipient and should not appear in CC inboxes).
+			ok := false
+			if isAssigneeQuery {
+				ok = bm.Status == "open" || bm.Status == "hooked"
+			} else {
+				ok = bm.Status == "open"
+			}
+			if ok {
 				seen[bm.ID] = true
 				messages = append(messages, bm.ToMessage())
 			}
 		}
 	}
-
-	// Query 2: CC match — fetch messages with cc:<identity> label
-	for _, id := range identities {
-		ccLabel := "cc:" + id
-		args := []string{"list",
-			"--label", "gt:message",
-			"--label", ccLabel,
-			"--json",
-			"--limit", "0",
-		}
-
-		ctx, cancel := bdReadCtx()
-		stdout, err := runBdCommand(ctx, args, m.workDir, beadsDir)
-		cancel()
-		if err != nil {
-			// CC query failure is non-fatal — assignee messages are primary
-			continue
-		}
-
-		if !isJSON(stdout) {
-			continue
-		}
-		var msgs []BeadsMessage
-		trimmedCC := bytes.TrimSpace(stdout)
-		if len(trimmedCC) == 0 || string(trimmedCC) == "null" || (trimmedCC[0] != '[' && trimmedCC[0] != '{') {
-			continue
-		}
-		if err := json.Unmarshal(stdout, &msgs); err != nil {
-			continue // Non-fatal for CC
-		}
-
-		for i := range msgs {
-			bm := &msgs[i]
-			if seen[bm.ID] {
-				continue
-			}
-			// CC match: open status only
-			if bm.Status == "open" {
-				seen[bm.ID] = true
-				messages = append(messages, bm.ToMessage())
-			}
-		}
-	}
-
-	// Query 3: Wisps table — ephemeral messages (protocol/lifecycle) are stored
-	// as wisps by shouldBeWisp(), but bd list only queries the issues table.
-	wispMessages := m.listWispMessages(beadsDir, identities, seen)
-	messages = append(messages, wispMessages...)
 
 	return messages, nil
 }
 
-// listWispMessages queries the wisps table for ephemeral messages matching the identity.
-// Protocol/lifecycle messages are stored as wisps by shouldBeWisp(), but bd list only
-// queries the issues table. Uses bd sql --json for full wisp data.
-func (m *Mailbox) listWispMessages(beadsDir string, identities []string, seen map[string]bool) []*Message {
-	var messages []*Message
-
-	// Query 3a: assignee match via SQL on wisps table
-	for _, id := range identities {
-		wispMsgs := m.queryWispMessagesByAssignee(beadsDir, id)
-		for _, bm := range wispMsgs {
-			if seen[bm.ID] {
-				continue
-			}
-			if bm.Status == "open" || bm.Status == "hooked" {
-				seen[bm.ID] = true
-				messages = append(messages, bm.ToMessage())
-			}
-		}
+// fetchAssigneeMessages runs the bd list --assignee query for one identity.
+// Returns parsed messages and an error; bd's empty-result text output is
+// translated to a nil slice with nil error.
+func (m *Mailbox) fetchAssigneeMessages(beadsDir, identity string) ([]BeadsMessage, error) {
+	args := []string{"list",
+		"--label", "gt:message",
+		"--assignee", identity,
+		"--json",
+		"--limit", "0",
 	}
 
-	// Query 3b: CC match via SQL on wisps table
-	for _, id := range identities {
-		wispMsgs := m.queryWispMessagesByCC(beadsDir, id)
-		for _, bm := range wispMsgs {
-			if seen[bm.ID] {
-				continue
-			}
-			if bm.Status == "open" {
-				seen[bm.ID] = true
-				messages = append(messages, bm.ToMessage())
-			}
-		}
+	ctx, cancel := bdReadCtx()
+	defer cancel()
+	stdout, err := runBdCommand(ctx, args, m.workDir, beadsDir)
+	if err != nil {
+		return nil, err
+	}
+	return parseBeadsListOutput(stdout)
+}
+
+// fetchCCMessages runs the bd list --label cc:<identity> query for one identity.
+// Returns parsed messages and an error; bd's empty-result text output is
+// translated to a nil slice with nil error.
+func (m *Mailbox) fetchCCMessages(beadsDir, identity string) ([]BeadsMessage, error) {
+	ccLabel := "cc:" + identity
+	args := []string{"list",
+		"--label", "gt:message",
+		"--label", ccLabel,
+		"--json",
+		"--limit", "0",
 	}
 
-	return messages
+	ctx, cancel := bdReadCtx()
+	defer cancel()
+	stdout, err := runBdCommand(ctx, args, m.workDir, beadsDir)
+	if err != nil {
+		return nil, err
+	}
+	return parseBeadsListOutput(stdout)
+}
+
+// parseBeadsListOutput handles bd list --json output, including the
+// empty-result plain-text case (v0.58.0+ returns "No issues found." text
+// instead of empty JSON).
+func parseBeadsListOutput(stdout []byte) ([]BeadsMessage, error) {
+	if !isJSON(stdout) {
+		return nil, nil
+	}
+	trimmed := bytes.TrimSpace(stdout)
+	if len(trimmed) == 0 || string(trimmed) == "null" || (trimmed[0] != '[' && trimmed[0] != '{') {
+		return nil, nil
+	}
+	var msgs []BeadsMessage
+	if err := json.Unmarshal(stdout, &msgs); err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
 
 // queryWispMessagesByAssignee queries wisps table for messages assigned to identity.
