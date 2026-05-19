@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,8 +24,8 @@ func TestGetTTL(t *testing.T) {
 		{"recovery", 7 * 24 * time.Hour},
 		{"escalation", 7 * 24 * time.Hour},
 		{"default", 24 * time.Hour},
-		{"", 24 * time.Hour},          // empty falls back to default
-		{"unknown", 24 * time.Hour},   // unknown falls back to default
+		{"", 24 * time.Hour},        // empty falls back to default
+		{"unknown", 24 * time.Hour}, // unknown falls back to default
 	}
 
 	for _, tc := range tests {
@@ -264,5 +266,81 @@ func TestLoadTTLConfigWithRoleSkipsInvalidPaths(t *testing.T) {
 	}
 	if ttls["error"] != defaultTTLs["error"] {
 		t.Errorf("error TTL = %v, want %v", ttls["error"], defaultTTLs["error"])
+	}
+}
+
+func TestResolveCompactTimeoutDefault(t *testing.T) {
+	t.Setenv(compactTimeoutEnv, "")
+	compactTimeout = 0
+	if got := resolveCompactTimeout(); got != defaultCompactTimeout {
+		t.Errorf("resolveCompactTimeout() = %v, want %v", got, defaultCompactTimeout)
+	}
+}
+
+func TestResolveCompactTimeoutEnv(t *testing.T) {
+	t.Setenv(compactTimeoutEnv, "12")
+	compactTimeout = 0
+	if got := resolveCompactTimeout(); got != 12*time.Second {
+		t.Errorf("resolveCompactTimeout() = %v, want 12s", got)
+	}
+}
+
+func TestResolveCompactTimeoutFlagWins(t *testing.T) {
+	t.Setenv(compactTimeoutEnv, "12")
+	compactTimeout = 99 * time.Second
+	defer func() { compactTimeout = 0 }()
+	if got := resolveCompactTimeout(); got != 99*time.Second {
+		t.Errorf("resolveCompactTimeout() = %v, want 99s (flag wins)", got)
+	}
+}
+
+func TestResolveCompactProgressIntervalDefault(t *testing.T) {
+	t.Setenv(compactProgressEnv, "")
+	if got := resolveCompactProgressInterval(); got != defaultCompactProgressEvery {
+		t.Errorf("resolveCompactProgressInterval() = %v, want %v",
+			got, defaultCompactProgressEvery)
+	}
+}
+
+func TestResolveCompactProgressIntervalDisabled(t *testing.T) {
+	t.Setenv(compactProgressEnv, "0")
+	if got := resolveCompactProgressInterval(); got != 0 {
+		t.Errorf("resolveCompactProgressInterval() = %v, want 0 (disabled)", got)
+	}
+}
+
+func TestCompactProgressFormatLineWithTotal(t *testing.T) {
+	p := newCompactProgress()
+	atomic.StoreInt32(&p.total, 10)
+	atomic.StoreInt32(&p.processed, 3)
+	p.setStep("processing wisps")
+	p.setCurrentWisp("gt-abc")
+
+	line := p.formatProgressLine(5 * time.Second)
+	for _, want := range []string{"processing wisps", "3/10", "gt-abc", "elapsed 5s"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("formatProgressLine() = %q, want substring %q", line, want)
+		}
+	}
+}
+
+func TestCompactProgressFormatLineNoTotal(t *testing.T) {
+	p := newCompactProgress()
+	p.setStep("listing wisps")
+	line := p.formatProgressLine(2 * time.Second)
+	if !strings.Contains(line, "listing wisps") {
+		t.Errorf("formatProgressLine() = %q, want %q substring", line, "listing wisps")
+	}
+	if strings.Contains(line, "/") {
+		// no total set yet, so we shouldn't print a fraction like 0/0
+		t.Errorf("formatProgressLine() = %q, should not include i/N when total is 0", line)
+	}
+}
+
+func TestErrCompactTimeoutMessage(t *testing.T) {
+	err := &errCompactTimeout{timeout: 5 * time.Minute}
+	got := err.Error()
+	if !strings.Contains(got, "5m") || !strings.Contains(got, "timed out") {
+		t.Errorf("errCompactTimeout.Error() = %q, want 5m + 'timed out' substring", got)
 	}
 }
