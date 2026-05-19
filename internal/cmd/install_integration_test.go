@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/testutil"
 )
 
 // TestInstallCreatesCorrectStructure validates that a fresh gt install
@@ -28,6 +29,11 @@ func TestInstallCreatesCorrectStructure(t *testing.T) {
 
 	// Kill any stale dolt from a previous test to avoid port 3307 conflict.
 	_ = exec.Command("pkill", "-f", "dolt sql-server").Run()
+	// Register a per-town dolt-reap BEFORE running gt install, so the dolt
+	// sql-server spawned by install gets killed even if a later assertion
+	// fatals (aa-7f9r). The broad pkill below is a defensive backstop;
+	// testutil.ReapDoltOnCleanup is the targeted, reliable path.
+	testutil.ReapDoltOnCleanup(t, hqPath)
 	t.Cleanup(func() { _ = exec.Command("pkill", "-f", "dolt sql-server").Run() })
 
 	// Run gt install
@@ -94,6 +100,11 @@ func TestInstallBeadsHasCorrectPrefix(t *testing.T) {
 
 	// Kill any stale dolt from a previous test to avoid port 3307 conflict.
 	_ = exec.Command("pkill", "-f", "dolt sql-server").Run()
+	// Register a per-town dolt-reap BEFORE running gt install, so the dolt
+	// sql-server spawned by install gets killed even if a later assertion
+	// fatals (aa-7f9r). The broad pkill below is a defensive backstop;
+	// testutil.ReapDoltOnCleanup is the targeted, reliable path.
+	testutil.ReapDoltOnCleanup(t, hqPath)
 	t.Cleanup(func() { _ = exec.Command("pkill", "-f", "dolt sql-server").Run() })
 
 	// Run gt install (includes beads init by default)
@@ -358,6 +369,11 @@ func TestInstallFormulasProvisioned(t *testing.T) {
 
 	// Kill any stale dolt from a previous test to avoid port 3307 conflict.
 	_ = exec.Command("pkill", "-f", "dolt sql-server").Run()
+	// Register a per-town dolt-reap BEFORE running gt install, so the dolt
+	// sql-server spawned by install gets killed even if a later assertion
+	// fatals (aa-7f9r). The broad pkill below is a defensive backstop;
+	// testutil.ReapDoltOnCleanup is the targeted, reliable path.
+	testutil.ReapDoltOnCleanup(t, hqPath)
 	t.Cleanup(func() { _ = exec.Command("pkill", "-f", "dolt sql-server").Run() })
 
 	// Run gt install (includes beads and formula provisioning)
@@ -556,6 +572,11 @@ func TestInstallDoctorClean(t *testing.T) {
 
 	// Kill any stale dolt from previous test BEFORE install to avoid port 3307 conflict.
 	_ = exec.Command("pkill", "-f", "dolt sql-server").Run()
+	// Register a per-town dolt-reap BEFORE running gt install, so the dolt
+	// sql-server spawned by install gets killed even if a later assertion
+	// fatals (aa-7f9r). `gt dolt stop` below is best-effort graceful
+	// shutdown; testutil.ReapDoltOnCleanup is the hard backstop.
+	testutil.ReapDoltOnCleanup(t, hqPath)
 
 	// Set up git identity in the test's temp HOME so EnsureDoltIdentity can copy it.
 	configureGitIdentity(t, env)
@@ -690,6 +711,11 @@ func TestInstallWithDaemon(t *testing.T) {
 
 	// Kill any stale dolt from previous test BEFORE install to avoid port 3307 conflict.
 	_ = exec.Command("pkill", "-f", "dolt sql-server").Run()
+	// Register a per-town dolt-reap BEFORE running gt install, so the dolt
+	// sql-server spawned by install gets killed even if a later assertion
+	// fatals (aa-7f9r). `gt dolt stop` below is best-effort graceful
+	// shutdown; testutil.ReapDoltOnCleanup is the hard backstop.
+	testutil.ReapDoltOnCleanup(t, hqPath)
 
 	// Set up git identity in the test's temp HOME so EnsureDoltIdentity can copy it.
 	configureGitIdentity(t, env)

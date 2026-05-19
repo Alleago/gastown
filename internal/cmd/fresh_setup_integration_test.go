@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/testutil"
 )
 
 var freshSetupIntegrationCounter atomic.Int32
@@ -41,6 +42,11 @@ func TestFreshInstallRigPolecatHookIntegration(t *testing.T) {
 	configureGitIdentityForEnv(t, env)
 
 	gtBinary := buildGT(t)
+	// Register dolt-reap cleanup BEFORE the install runs, so the dolt
+	// sql-server gets killed even if a later assertion in this test
+	// fatals (aa-7f9r). The `gt dolt stop` cleanup below is best-effort
+	// graceful shutdown; testutil.ReapDoltOnCleanup is the hard backstop.
+	testutil.ReapDoltOnCleanup(t, hqPath)
 	runFreshSetupCmd(t, "", env, gtBinary, "install", hqPath, "--name", "test-town", "--git", "--dolt-port", doltPortString)
 	t.Cleanup(func() {
 		cmd := exec.Command(gtBinary, "dolt", "stop")
